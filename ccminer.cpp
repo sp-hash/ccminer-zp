@@ -1364,8 +1364,11 @@ static void *miner_thread(void *userdata)
 		/* on start, max64 should not be 0,
 		*    before hashrate is computed */
 		
-		minmax = 83000000 * max64time;		
-		max64 = max(minmax, max64);
+//		minmax = 83000000 * max64time;		
+//		max64 = max(minmax, max64);
+
+		minmax = 0xffffffffU / opt_n_threads;
+		max64 = max(minmax - 1, max64);
 
 		// we can't scan more than uint capacity
 		max64 = min(UINT32_MAX, max64);
@@ -1375,13 +1378,7 @@ static void *miner_thread(void *userdata)
 		if(end_nonce >= UINT32_MAX - 256)
 			end_nonce = UINT32_MAX;
 
-		if((max64 + start_nonce) >= end_nonce)
-			max_nonce = (uint32_t)end_nonce;
-		else
-			max_nonce = (uint32_t)(max64 + start_nonce);
-
-		// todo: keep it rounded for gpu threads ?
-
+		max_nonce = end_nonce;
 		work.scanned_from = start_nonce;
 
 		if(opt_debug)
@@ -1425,7 +1422,7 @@ static void *miner_thread(void *userdata)
 			cgpu->monitor.sampling_flag = false;
 		}
 
-		if(diff.tv_sec > 0 || (diff.tv_sec == 0 && diff.tv_usec>2000)) // avoid totally wrong hash rates
+		if (diff.tv_usec || diff.tv_sec) 
 		{
 			double dtime = (double)diff.tv_sec + 1e-6 * diff.tv_usec;
 			double rate_factor = 1.0;
@@ -1435,29 +1432,56 @@ static void *miner_thread(void *userdata)
 				pthread_mutex_lock(&stats_lock);
 				thr_hashrates[thr_id] = hashes_done / dtime;
 				thr_hashrates[thr_id] *= rate_factor;
-				stats_remember_speed(thr_id, hashes_done, thr_hashrates[thr_id], (uint8_t)rc, work.height);
+				if (loopcnt > 2) // ignore first (init time)
+					stats_remember_speed(thr_id, hashes_done, thr_hashrates[thr_id], (uint8_t)rc, work.height);
 				pthread_mutex_unlock(&stats_lock);
 			}
 		}
 
-		work.scanned_to = start_nonce + hashes_done - 1;
+		if (rc > 0)
+			work.scanned_to = start_nonce + hashes_done;
+		if (rc > 1)
+			work.scanned_to = start_nonce + hashes_done;
+		else {
+			work.scanned_to = max_nonce;
+			if (opt_debug && opt_benchmark) {
+				// to debug nonce ranges
+				gpulog(LOG_DEBUG, thr_id, "ends=%08x range=%08x", nonceptr[0], (work.scanned_to - start_nonce));
+			}
+			// prevent low scan ranges on next loop on fast algos (blake)
+			if (nonceptr[0] > UINT32_MAX - 64)
+				nonceptr[0] = UINT32_MAX;
+		}
+
+
+
 		if(opt_debug && opt_benchmark)
 		{
 			// to debug nonce ranges
 			applog(LOG_DEBUG, "GPU #%d:  ends=%08x range=%08x", device_map[thr_id],
-				   start_nonce + hashes_done - 1, hashes_done);
+				   start_nonce + hashes_done, hashes_done);
 		}
 
 		if(check_dups)
 			hashlog_remember_scan_range(&work);
 
-		if(!opt_quiet && loopcnt > 0)
+		if (thr_id == 0 && !opt_quiet && loopcnt > 1 )
 		{
-			double hashrate;
-
-			hashrate = thr_hashrates[thr_id];
-			format_hashrate(hashrate, s);
-			applog(LOG_INFO, "GPU #%d: %s, %s", device_map[thr_id], device_name[device_map[thr_id]], s);
+			format_hashrate(thr_hashrates[thr_id], s);
+			char output[4096];
+			char* peker = &output[0];
+			int now = 0;
+			for (int i = 0; i < opt_n_threads; i++)
+			{
+				format_hashrate(thr_hashrates[i], s);
+				int pos = sprintf(peker, "GPU%d %s ", device_map[i], s);
+				now += pos;
+				peker = &output[now];
+			}
+			if (thr_id == 0)
+			{
+				applog(LOG_BLUE, output);
+			}
 		}
 
 		/* loopcnt: ignore first loop hashrate */

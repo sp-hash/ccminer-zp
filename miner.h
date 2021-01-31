@@ -16,6 +16,12 @@
 #include <jansson.h>
 #include <curl/curl.h>
 
+#define snprintf(...) _snprintf(__VA_ARGS__)
+#define strdup(...) _strdup(__VA_ARGS__)
+#define strncasecmp(x,y,z) _strnicmp(x,y,z)
+#define strcasecmp(x,y) _stricmp(x,y)
+
+
 #ifdef WIN32
 #ifndef __cplusplus
 #define inline __inline
